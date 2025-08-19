@@ -99,4 +99,46 @@ Method-2 "mvappend"
 // Filter for suspicious processes with DNS activity  
 | FileName=/rundll32\.exe|powershell\.exe|mpcmdrun\.exe/iF DomainName!=NULL  
 
+
+
+“any protocol” and just stuff that works in your LogScale syntax (no aliases, no where, no AS). Use a tight time window (e.g., last 6–12h). After running, sort by count() and triage users with count() ≥ 3 (= at least 2 hops).
+
+A) Any-protocol via LOGONs + remote services (host-level signals)
+#repo=base_sensor
+(#event_simpleName=UserLogon OR #event_simpleName=ServiceRollup2) cid="*" event_platform=Win
+(
+  // Remote/Network logons commonly used for lateral movement
+  (#event_simpleName=UserLogon AND LogonResult="Success" AND
+    (LogonType_decimal=10 OR LogonType_decimal=3 OR LogonType_decimal=9 OR LogonType_decimal=8))
+  OR
+  // Remote service exec (PsExec/PAExec/Impacket etc.)
+  (#event_simpleName=ServiceRollup2 AND
+    (ServiceName="PSEXESVC" OR ServiceName="remcomsvc" OR ServiceName="PAExec"))
+)
+| groupBy([UserName, ComputerName], function=selectLast(@timestamp, #event_simpleName, ComputerName))
+| groupBy([UserName], function=count())
+
+
+Tip: add lines like ComputerName!="JUMPBOX01" before the first groupBy if needed.
+
+B) Any-protocol via NETWORK (RDP/SMB/WinRM/RPC/SSH)
+#repo=base_sensor
+(#event_simpleName=NetworkConnectIP4 OR #event_simpleName=NetworkConnectIP6) cid="*" event_platform=Win
+(
+// RDP / SMB / WinRM / RPC / SSH common lateral ports
+  RemotePort=3389 OR RemotePort=445 OR RemotePort=139 OR RemotePort=5985 OR RemotePort=5986
+  OR RemotePort=47001 OR RemotePort=135 OR RemotePort=22
+)
+AND (RemoteAddressIP4="/^(10\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|192\\.168\\.)/i")
+| groupBy([UserName, RemoteAddressIP4], function=selectLast(@timestamp, ComputerName, RemoteAddressIP4, RemotePort))
+| groupBy([UserName], function=count())
+
+
+How to use:
+
+Run A (host-level) and B (network-level) in the same window.
+
+In each result, sort by count() and focus on users with 3+ targets (that’s ≥2 jumps).
+
+If you want to exclude known scanners or jump hosts, add simple != lines before the first groupBy (by UserName, ComputerName, or source subnets).
 ```
